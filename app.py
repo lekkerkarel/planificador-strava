@@ -587,6 +587,24 @@ st.title("Planificador de entrenamiento a partir de CSV de Strava")
 st.info(
     "Sube tu CSV de Strava y genera un plan anual en Excel (una pestaña por mes) con sesiones detalladas. Inicia sesion en Strava en tu PC. Click en tu foto de perfil, selecciona ajustes. En el menu lateral izquierdo selecciona Mi cuenta. Entra en Descarga o elimina tu cuenta. Click en soliudita tu archivo. Se enviara un archivo a tu mail, solo necesitas el archivo actividades.csv"
 )
+st.markdown(
+    """
+### Cómo descargar tu CSV de Strava
+
+1. Inicia sesión en Strava desde un ordenador y haz clic en tu foto de perfil.  
+   Selecciona **Ajustes**.
+
+2. En el menú lateral izquierdo, entra en **Mi cuenta**.
+
+3. Accede a **Descarga o elimina tu cuenta** y pulsa en **Solicita tu archivo**.
+
+4. Strava te enviará un correo electrónico con un archivo comprimido (.zip).  
+   Descárgalo y descomprímelo.
+
+5. Dentro encontrarás varios archivos.  
+   **Solo necesitas el archivo `activities.csv`**, que es el que debes subir aquí.
+"""
+)
 
 uploaded = st.file_uploader("Sube tu CSV exportado de Strava (activities.csv)", type=["csv"])
 
