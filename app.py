@@ -256,6 +256,176 @@ def weekly_baseline(target_df: pd.DataFrame) -> Dict[str, float]:
     return {"w_km": w_km, "long_km": long_km, "sessions_w": sessions_w}
 
 
+
+# -----------------------------
+# Feedback semanal (métricas + texto)
+# -----------------------------
+
+def compute_weekly_summaries(target_df: pd.DataFrame, colmap: Dict[str, str]) -> pd.DataFrame:
+    """
+    Devuelve un dataframe con una fila por semana (semanas que empiezan en lunes).
+    Columnas: week_start, km, sesiones, long_km, avg_hr_mean (si existe), avg_hr_weighted (si existe).
+    """
+    if target_df.empty:
+        return pd.DataFrame()
+
+    df = target_df.copy()
+    df["date_only"] = pd.to_datetime(df["date_only"]).dt.date
+    df["week_start"] = pd.to_datetime(df["date_only"]).dt.to_period("W-MON").apply(lambda p: p.start_time.date())
+
+    # Distancia
+    if "distance_km" not in df.columns:
+        df["distance_km"] = np.nan
+
+    # FC media (si existe)
+    avg_hr_col = colmap.get("avg_hr", "")
+    if avg_hr_col and avg_hr_col in df.columns:
+        df["avg_hr"] = pd.to_numeric(df[avg_hr_col], errors="coerce")
+    else:
+        df["avg_hr"] = np.nan
+
+    # Duración (para ponderar FC media si existe)
+    if "moving_min" in df.columns:
+        df["moving_min"] = pd.to_numeric(df["moving_min"], errors="coerce")
+    else:
+        df["moving_min"] = np.nan
+
+    g = df.groupby("week_start", dropna=False)
+
+    out = g.agg(
+        km=("distance_km", "sum"),
+        sesiones=("distance_km", "count"),
+        long_km=("distance_km", "max"),
+        avg_hr_mean=("avg_hr", "mean"),
+        moving_min_sum=("moving_min", "sum"),
+    ).reset_index()
+
+    # FC ponderada por minutos, si hay datos suficientes
+    def weighted_avg_hr(sub: pd.DataFrame) -> float:
+        sub = sub.copy()
+        sub = sub[sub["avg_hr"].notna() & sub["moving_min"].notna() & (sub["moving_min"] > 0)]
+        if sub.empty:
+            return float("nan")
+        return float((sub["avg_hr"] * sub["moving_min"]).sum() / sub["moving_min"].sum())
+
+    out["avg_hr_weighted"] = g.apply(weighted_avg_hr).values
+
+    return out.sort_values("week_start")
+
+
+def generate_weekly_feedback_text(
+    weekly: pd.DataFrame,
+    modality: str,
+    goal: str,
+    hrmax: int,
+) -> str:
+    """
+    Genera un feedback semanal basado en reglas (sin IA).
+    Si más adelante configuras IA, puedes sustituir esta función por una llamada a un modelo.
+    """
+    if weekly.empty:
+        return "No hay suficientes datos de la modalidad seleccionada para generar un feedback semanal."
+
+    last = weekly.iloc[-1]
+    prev = weekly.iloc[-2] if len(weekly) >= 2 else None
+
+    km = float(last["km"]) if pd.notna(last["km"]) else 0.0
+    sesiones = int(last["sesiones"]) if pd.notna(last["sesiones"]) else 0
+    long_km = float(last["long_km"]) if pd.notna(last["long_km"]) else 0.0
+    hr_w = float(last["avg_hr_weighted"]) if pd.notna(last["avg_hr_weighted"]) else None
+    hr_m = float(last["avg_hr_mean"]) if pd.notna(last["avg_hr_mean"]) else None
+
+    # Comparativas
+    km_change = None
+    if prev is not None and pd.notna(prev["km"]) and float(prev["km"]) > 0:
+        km_change = (km / float(prev["km"]) - 1.0) * 100.0
+
+    # Hechos
+    modality_name = "Correr" if modality == "correr" else "Bicicleta"
+    goal_label = dict(GOALS[modality]).get(goal, goal)
+    z2 = hr_zones(hrmax)["Z2"]
+
+    facts = []
+    facts.append(f"- Modalidad: **{modality_name}**")
+    facts.append(f"- Objetivo: **{goal_label}**")
+    facts.append(f"- Semana analizada (inicio lunes): **{last['week_start']}**")
+    facts.append(f"- Volumen: **{km:.1f} km** en **{sesiones}** sesiones")
+    facts.append(f"- Sesión más larga: **{long_km:.1f} km**")
+
+    if hr_w is not None:
+        facts.append(f"- FC media (ponderada por tiempo, si disponible): **{hr_w:.0f} ppm** (Z2 aprox {z2[0]}–{z2[1]} ppm)")
+    elif hr_m is not None:
+        facts.append(f"- FC media (si disponible): **{hr_m:.0f} ppm** (Z2 aprox {z2[0]}–{z2[1]} ppm)")
+
+    if km_change is not None:
+        sign = "+" if km_change >= 0 else ""
+        facts.append(f"- Cambio de volumen vs. semana anterior: **{sign}{km_change:.0f}%**")
+
+    # Interpretación (reglas simples)
+    alerts = []
+    positives = []
+    actions = []
+
+    # Volumen y progresión
+    if km_change is not None and km_change > 12:
+        alerts.append("Has subido el volumen bastante respecto a la semana anterior. Mantén la próxima semana más estable para reducir riesgo de sobrecarga.")
+        actions.append("Reduce el volumen de la próxima semana un 5–10% o repite el volumen actual antes de volver a subir.")
+    elif km_change is not None and km_change < -20:
+        alerts.append("La carga ha bajado mucho vs. la semana anterior. Si ha sido por fatiga/enfermedad, bien; si no, intenta recuperar consistencia.")
+        actions.append("Vuelve gradualmente al volumen habitual (no lo recuperes todo de golpe).")
+    else:
+        positives.append("La progresión de volumen parece razonable o estable.")
+        actions.append("Mantén la progresión suave (subidas pequeñas y semana de descarga cada 4 semanas).")
+
+    # Frecuencia
+    if sesiones <= 2:
+        alerts.append("Con 2 o menos sesiones semanales es difícil mejorar de forma consistente.")
+        actions.append("Si puedes, sube a 3 sesiones/semana (aunque sean cortas) para ganar continuidad.")
+    elif sesiones >= 6:
+        positives.append("Muy buena frecuencia semanal.")
+        actions.append("Asegura al menos 1 día muy suave o descanso real para absorber la carga.")
+    else:
+        positives.append("Frecuencia semanal adecuada para progresar.")
+
+    # FC (muy aproximado)
+    if hr_w is not None:
+        if hr_w > z2[1] + 5:
+            alerts.append("Tu FC media ponderada está por encima de Z2: es probable que muchas sesiones estén siendo demasiado intensas para una base aeróbica.")
+            actions.append("En rodajes fáciles, baja el ritmo/potencia hasta mantenerte en Z2 la mayor parte del tiempo.")
+        else:
+            positives.append("La FC media ponderada está alineada con un trabajo aeróbico (Z2) en conjunto.")
+    # Tirada larga / salida larga
+    if modality == "correr":
+        if goal == "maraton" and long_km < 12 and km > 0:
+            actions.append("Prioriza una tirada larga semanal (progresiva) y un día fácil extra si encaja en tu agenda.")
+    else:
+        if goal == "gran_fondo" and long_km < 60 and km > 0:
+            actions.append("Para gran fondo, añade una salida larga semanal y practica nutrición/hidratación.")
+
+    # Construir texto en Markdown
+    text = []
+    text.append("### Feedback semanal")
+    text.append("")
+    text.append("#### Hechos de la semana")
+    text.extend(facts)
+    text.append("")
+    if positives:
+        text.append("#### Lo que va bien")
+        for p in positives[:5]:
+            text.append(f"- {p}")
+        text.append("")
+    if alerts:
+        text.append("#### Alertas o ajustes recomendados")
+        for a in alerts[:5]:
+            text.append(f"- {a}")
+        text.append("")
+    if actions:
+        text.append("#### Próximos pasos")
+        # Lista numerada
+        for i, act in enumerate(actions[:5], start=1):
+            text.append(f"{i}. {act}")
+
+    return "\n".join(text)
 # -----------------------------
 # Generación del plan
 # -----------------------------
@@ -587,24 +757,6 @@ st.title("Planificador de entrenamiento a partir de CSV de Strava")
 st.info(
     "Sube tu CSV de Strava y genera un plan anual en Excel (una pestaña por mes) con sesiones detalladas."
 )
-st.markdown(
-    """
-### Cómo descargar tu CSV de Strava
-
-1. Inicia sesión en Strava desde un ordenador y haz clic en tu foto de perfil.  
-   Selecciona **Ajustes**.
-
-2. En el menú lateral izquierdo, entra en **Mi cuenta**.
-
-3. Accede a **Descarga o elimina tu cuenta** y pulsa en **Solicita tu archivo**.
-
-4. Strava te enviará un correo electrónico con un archivo comprimido (.zip).  
-   Descárgalo y descomprímelo.
-
-5. Dentro encontrarás varios archivos.  
-   **Solo necesitas el archivo `activities.csv`**, que es el que debes subir aquí.
-"""
-)
 
 uploaded = st.file_uploader("Sube tu CSV exportado de Strava (activities.csv)", type=["csv"])
 
@@ -684,6 +836,19 @@ c2.metric("Km/semana (media ~6 semanas)", f"{baseline['w_km']:.1f}")
 c3.metric("Sesión más larga aprox", f"{baseline['long_km']:.1f} km")
 c4.metric("HRmáx estimada (aprox)", f"{hrmax} ppm")
 st.caption("Si conoces tu HRmáx real, puedes modificar la función de estimación para usar tu valor.")
+
+
+# Feedback semanal (botón)
+weekly = compute_weekly_summaries(target_df, colmap)
+if st.button("Generar feedback semanal"):
+    feedback_md = generate_weekly_feedback_text(
+        weekly=weekly,
+        modality=modality,
+        goal=goal,
+        hrmax=hrmax,
+    )
+    st.markdown(feedback_md)
+    st.divider()
 
 profile = UserProfile(
     age=int(age),
