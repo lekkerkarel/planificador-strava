@@ -585,7 +585,13 @@ st.set_page_config(page_title="Planificador Strava", layout="wide")
 st.title("Planificador de entrenamiento a partir de CSV de Strava")
 
 st.info(
-    "Sube tu CSV de Strava y genera un plan anual en Excel (una pestaña por mes) con sesiones detalladas."
+    "Sube tu CSV de Strava y genera un plan anual en Excel (una pestaña por mes) con sesiones detalladas.
+    - Inicia sesion en Strava en tu PC
+    - Click en tu foto de perfil, selecciona ajustes
+    - En el menu lateral izquierdo selecciona Mi cuenta
+    - Entra en Descarga o elimina tu cuenta
+    - Click en soliudita tu archivo
+    Se enviara un archivo a tu mail, solo necesitas el archivo actividades.csv"
 )
 
 uploaded = st.file_uploader("Sube tu CSV exportado de Strava (activities.csv)", type=["csv"])
