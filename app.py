@@ -752,7 +752,7 @@ def plan_to_excel_bytes(plan: pd.DataFrame) -> bytes:
 # -----------------------------
 
 st.set_page_config(page_title="Planificador Strava", layout="wide")
-st.title("Planificador de entrenamiento a partir de CSV de Strava")
+st.title("Planificador de entrenamiento Strava")
 
 st.info(
     "Sube tu CSV de Strava y genera un plan anual en Excel (una pestaña por mes) con sesiones detalladas."
